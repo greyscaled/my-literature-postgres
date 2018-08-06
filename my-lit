@@ -1,0 +1,265 @@
+#!/bin/bash
+
+########## VARIABLES ##########
+
+## Helpers
+yesReg="^(y|Y)(es)?$"
+
+## Output
+bold=$(tput bold)
+clear=$(tput clear)
+normal=$(tput sgr0)
+tab=$(tput cuf 4)
+
+## Database info
+user=postgres
+password=postgres
+dbname=MyLiterature
+tables="Authors and Books"
+
+########### PROCEDURES ##########
+addAuthor ()
+{
+	echo "Adding new Author"
+	echo -n "Author First name: "
+	read authorFirst
+
+	echo -n "Author Last name: "
+	read authorLast
+
+	echo -n "add website? [enter if none]: "
+	read link
+
+	PGPASSWORD=$password psql --echo-all --dbname=$dbname --username=$user --command="INSERT into Authors (name, website) SELECT lower('${authorFirst}') || ' ' || lower('${authorLast}'), trim('${link}') WHERE NOT EXISTS (SELECT * FROM Authors WHERE name = lower('${authorFirst}') || ' ' || lower('${authorLast}'));"
+}
+
+addBook ()
+{
+	echo "Adding new Book"
+	echo -n "Author last name: "
+	read author
+	authorid=`PGPASSWORD=$password psql --dbname=$dbname --username=$user --quiet --tuples-only --command="SELECT id FROM Authors WHERE name LIKE lower('%${author}%');"`
+
+	if [[ $authorid == "" ]]; then
+		addAuthor
+		authorid=`PGPASSWORD=$password psql --dbname=$dbname --username=$user --quiet --tuples-only --command="SELECT id FROM Authors WHERE name LIKE lower('%${author}%');"`
+	fi
+
+	echo -n "Book title: "
+	read title
+
+	alreadyExists=`PGPASSWORD=$password psql --dbname=$dbname --username=$user --quiet --tuples-only --command="SELECT id FROM Books WHERE title = lower('${title}');"`
+
+	if ! [[ $alreadyExists == "" ]]; then
+		echo "Book already exists [hit enter]"
+		read
+		return
+	fi
+
+	echo -n "Link to book: "
+	read link
+
+	echo -n "Did you read? (y|n) "
+	read didRead
+	if [[ "$didRead" =~ $yesReg ]]; then
+		didRead=true
+	else
+		didRead=false
+	fi
+
+	echo -n "Did you like? (y|n) "
+	read liked
+	if [[ "$liked" =~ $yesReg ]]; then
+		liked=true
+	else
+		liked=false
+	fi
+
+	echo -n "Did you purchase or download? (y|n) "
+	read purchased
+	if [[ "$purchased" =~ $yesReg ]]; then
+		purchased=true
+	else
+		purchased=false
+	fi
+
+	echo "please confirm"
+	echo ""
+	echo "Author: $author"
+	echo "Title: $title"
+	echo "Link: $link"
+	echo "Read: $didRead"
+	echo "Liked: $liked"
+	echo "Own: $purchased"
+	echo ""
+
+	echo -n "ok? (y|n) "
+	read confirm
+	if ! [[ "$confirm" =~ $yesReg ]]; then
+		echo "Not confirmed. Returning"
+		return
+	fi
+
+	echo "confirmed"
+	PGPASSWORD=$password psql --echo-all --dbname=$dbname --username=$user --command="INSERT into Books (title, author, link, read, liked, purchased) VALUES(lower('${title}'), $authorid, trim('${link}'), $didRead, $liked, $purchased);"
+
+	clear
+}
+
+listLiked ()
+{
+	OFFSET=0
+	LIMIT=20
+	PGPASSWORD=$password psql --quiet --dbname=$dbname --username=$user --command="SELECT Books.title, Books.purchased, Authors.name as author FROM BOOKS INNER JOIN Authors ON Books.author = Authors.id WHERE Books.liked = true LIMIT $LIMIT OFFSET $OFFSET;"
+
+	while [ true ]; do
+		echo -n "more --- [b to go back]"
+		read action
+		case $action in
+			b )
+				return
+				;;
+			* )
+				OFFSET=$(( OFFSET + 20 ))
+				PGPASSWORD=$password psql --quiet --dbname=$dbname --username=$user --command="SELECT Books.title, Books.purchased, Authors.name as author FROM BOOKS INNER JOIN Authors ON Books.author = Authors.id WHERE Books.liked = true LIMIT $LIMIT OFFSET $OFFSET;"
+
+		esac
+	done
+}
+
+listToRead ()
+{
+	OFFSET=0
+	LIMIT=20
+	PGPASSWORD=$password psql --quiet --dbname=$dbname --username=$user --command="SELECT Books.title, Books.purchased, Authors.name as author FROM BOOKS INNER JOIN Authors ON Books.author = Authors.id WHERE Books.read = false LIMIT $LIMIT OFFSET $OFFSET;"
+
+	while [ true ]; do
+		echo -n "more --- [b to go back]"
+		read action
+		case $action in
+			b )
+				return
+				;;
+			* )
+				OFFSET=$(( OFFSET + 20 ))
+				PGPASSWORD=$password psql --quiet --dbname=$dbname --username=$user --command="SELECT Books.title, Books.purchased, Authors.name as author FROM BOOKS INNER JOIN Authors ON Books.author = Authors.id WHERE Books.read = false LIMIT $LIMIT OFFSET $OFFSET;"
+		esac
+	done
+}
+
+purchaseBook ()
+{
+	echo -n "Which book did you purchase? "
+	read title
+
+	bookid=`PGPASSWORD=$password psql --dbname=$dbname --username=$user --quiet --tuples-only --command="SELECT id FROM Books WHERE title = lower('${title}');"`
+
+	if [[ $bookid == "" ]]; then
+		echo "Book doesnt exist "
+		echo -n "Add new book? (y|n) "
+		read action
+		if [[ "$action" =~ $yesReg ]]; then
+			addBook
+		fi
+		return
+	fi
+
+	PGPASSWORD=$password psql --echo-all --dbname=$dbname --username=$user --command="UPDATE Books SET purchased = true WHERE id = $bookid;"
+}
+
+createDatabase ()
+{
+	if [ "$1" != "" ]; then
+		dbname=$1
+	fi
+
+	if [ "$2" != "" ]; then
+		user=$2
+	fi
+
+	echo "creating literature database named ${dbname} with user ${user}"
+	createdb --echo --owner=$user --username=$user $dbname
+	echo "creating tables ${tables}"
+	PGPASSWORD=$password psql --echo-all --dbname=$dbname --file=sql/create_tables.sql --username=$user
+}
+
+deleteDatabase ()
+{
+	if [ "$1" != "" ]; then
+		dbname=$1
+	fi
+
+	if [ "$2" != "" ]; then
+		user=$2
+	fi
+
+	echo "deleting literature database named ${dbname} for user ${user}"
+	dropdb --echo --username=$user $dbname
+}
+
+mainLoop ()
+{
+	clear
+	while [ true ]; do
+		echo -n "a (add author)|b (add book)|read|liked|purchase [q to quit]> "
+		read action
+		case $action in
+			a )
+				addAuthor
+				;;
+			b )
+				addBook
+				;;
+			liked )
+				listLiked
+				;;
+			purchase )
+				purchaseBook
+				;;
+			read )
+				listToRead
+				;;
+			q | quit )
+				exit 0
+				;;
+			* )
+				echo -e "command not recognized\n"
+		esac
+	done
+	exit 0
+}
+
+myLitUsage ()
+{
+	echo -e "${clear}${bold}my-lit${normal}\n\n"
+	echo -e "[[-c dbname user] | [-d dbname user] | [-h] | [-i]]\n\n"
+	echo "${tab}-c, --create - creates database${normal}"
+	echo "${tab}-d, --delete - deletes database${normal}. This cannot be undone."
+	echo "${tab}${tab} dbname [default=MyMusic] - Name of database to create"
+	echo "${tab}${tab} user [default=postgres] - Name of database owner and user"
+	echo "${tab}-h, --help - displays command line options${normal}"
+	echo "${tab}-i, --interactive - interactively add authors, books, view lists and more."
+}
+
+########### Main ##########
+case $1 in
+	-i | --interactive )
+		mainLoop
+		;;
+	-c | --create )
+		createDatabase $2 $3
+		;;
+	-d | --delete )
+		deleteDatabase $2 $3
+		;;
+	-h | --help )
+		myLitUsage
+		exit
+		;;
+	* )
+		myLitUsage
+		exit 1
+
+esac
+echo "done"
+exit 0
